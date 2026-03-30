@@ -147,20 +147,41 @@ if st.button("Add task"):
 
 all_tasks = st.session_state.task_repository.list_tasks()
 if all_tasks:
-    st.write("Current tasks:")
-    st.table(
-        [
-            {
-                "task_id": task.task_id,
-                "pet_id": task.pet_id,
-                "title": task.title,
-                "category": task.category.value,
-                "duration_minutes": task.duration_min,
-                "priority": task.priority,
-            }
-            for task in all_tasks
-        ]
+    st.write("Current tasks")
+
+    selected_pet_id = active_pet_options.get(selected_pet_label) if active_pet_options else None
+    preview_constraints = DailyConstraints(
+        target_date=date.today(),
+        available_minutes=24 * 60,
+        max_tasks=999,
+        active_pet_id=selected_pet_id,
     )
+    filtered_tasks = st.session_state.scheduler.filter_tasks(all_tasks, preview_constraints)
+    sorted_filtered_tasks = st.session_state.scheduler.sort_by_time(filtered_tasks)
+
+    if sorted_filtered_tasks:
+        st.success(
+            f"Showing {len(sorted_filtered_tasks)} due tasks for the selected pet, sorted by scheduler time rules."
+        )
+        st.table(
+            [
+                {
+                    "title": task.title,
+                    "category": task.category.value,
+                    "duration_minutes": task.duration_min,
+                    "priority": task.priority,
+                    "required": task.required,
+                    "preferred_window": (
+                        f"{task.preferred_time.start_hour:02d}:00-{task.preferred_time.end_hour:02d}:00"
+                        if task.preferred_time
+                        else "anytime"
+                    ),
+                }
+                for task in sorted_filtered_tasks
+            ]
+        )
+    else:
+        st.warning("No due tasks match the selected pet/date filter.")
 else:
     st.info("No tasks yet. Add one above.")
 
@@ -199,11 +220,15 @@ if st.button("Generate schedule"):
         if not plan.items:
             st.info("No tasks could be scheduled with the current constraints.")
         else:
-            st.write("Generated plan:")
+            st.success(
+                f"Scheduled {len(plan.items)} task(s) totaling {plan.total_minutes} minutes for today."
+            )
+            st.write("Generated plan")
             st.table(
                 [
                     {
                         "task": item.task.title,
+                        "pet_id": item.task.pet_id,
                         "start": item.scheduled_start.strftime("%H:%M"),
                         "end": item.scheduled_end.strftime("%H:%M"),
                         "reason": item.reason,
@@ -212,6 +237,16 @@ if st.button("Generate schedule"):
                 ]
             )
             st.caption(plan.summary())
+
+        if plan.warnings:
+            st.warning(
+                "Potential schedule conflicts were detected. Review the overlapping items below before relying on this plan."
+            )
+            for warning in plan.warnings:
+                st.warning(warning)
+            st.info(
+                "Helpful tip: if two tasks overlap, move one to a later time window or reduce today's max tasks."
+            )
 
         if plan.unscheduled_tasks:
             st.write("Unscheduled tasks:")
