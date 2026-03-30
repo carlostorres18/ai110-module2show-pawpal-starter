@@ -477,3 +477,114 @@ def test_scheduler_lightweight_conflict_detection_handles_invalid_windows() -> N
 	assert len(warnings) == 1
 	assert "Warning:" in warnings[0]
 	assert "invalid time window" in warnings[0]
+
+
+def test_sorting_correctness_returns_tasks_in_chronological_order() -> None:
+	scheduler = Scheduler()
+	tasks = [
+		CareTask(
+			task_id="task-evening",
+			pet_id="pet-1",
+			title="Evening walk",
+			category=TaskCategory.WALK,
+			duration_min=20,
+			priority=2,
+			frequency=Frequency.DAILY,
+			preferred_time=TimeWindow(start_hour=18, end_hour=19),
+		),
+		CareTask(
+			task_id="task-morning",
+			pet_id="pet-1",
+			title="Morning feeding",
+			category=TaskCategory.FEEDING,
+			duration_min=10,
+			priority=3,
+			frequency=Frequency.DAILY,
+			preferred_time=TimeWindow(start_hour=8, end_hour=9),
+		),
+		CareTask(
+			task_id="task-no-time",
+			pet_id="pet-1",
+			title="Brush coat",
+			category=TaskCategory.GROOMING,
+			duration_min=15,
+			priority=1,
+			frequency=Frequency.DAILY,
+		),
+	]
+
+	sorted_tasks = scheduler.sort_by_time(tasks)
+
+	assert [task.task_id for task in sorted_tasks] == [
+		"task-morning",
+		"task-evening",
+		"task-no-time",
+	]
+
+
+def test_recurrence_logic_marking_daily_task_complete_creates_next_day_instance() -> None:
+	task = CareTask(
+		task_id="task-daily-recur",
+		pet_id="pet-1",
+		title="Daily meds",
+		category=TaskCategory.MEDICATION,
+		duration_min=5,
+		priority=5,
+		frequency=Frequency.DAILY,
+	)
+	instance = TaskInstance(
+		task=task,
+		scheduled_start=datetime(2026, 3, 29, 7, 0),
+		scheduled_end=datetime(2026, 3, 29, 7, 5),
+		reason="daily routine",
+	)
+
+	next_instance = instance.mark_done()
+
+	assert instance.status == TaskStatus.DONE
+	assert next_instance is not None
+	assert next_instance.task.task_id != instance.task.task_id
+	assert next_instance.task.due_date == date.today() + timedelta(days=1)
+	assert next_instance.scheduled_start == datetime(2026, 3, 30, 7, 0)
+	assert next_instance.scheduled_end == datetime(2026, 3, 30, 7, 5)
+
+
+def test_conflict_detection_flags_duplicate_times() -> None:
+	scheduler = Scheduler()
+	first_task = CareTask(
+		task_id="task-duplicate-a",
+		pet_id="pet-1",
+		title="Morning walk",
+		category=TaskCategory.WALK,
+		duration_min=25,
+		priority=3,
+		frequency=Frequency.DAILY,
+	)
+	second_task = CareTask(
+		task_id="task-duplicate-b",
+		pet_id="pet-1",
+		title="Breakfast",
+		category=TaskCategory.FEEDING,
+		duration_min=15,
+		priority=4,
+		frequency=Frequency.DAILY,
+	)
+
+	first_instance = TaskInstance(
+		task=first_task,
+		scheduled_start=datetime(2026, 3, 30, 8, 0),
+		scheduled_end=datetime(2026, 3, 30, 8, 25),
+		reason="daily care",
+	)
+	second_instance = TaskInstance(
+		task=second_task,
+		scheduled_start=datetime(2026, 3, 30, 8, 0),
+		scheduled_end=datetime(2026, 3, 30, 8, 15),
+		reason="daily care",
+	)
+
+	conflicts = scheduler.detect_time_conflicts([first_instance, second_instance])
+
+	assert len(conflicts) == 1
+	left, right = conflicts[0]
+	assert {left.task.task_id, right.task.task_id} == {"task-duplicate-a", "task-duplicate-b"}
