@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from enum import Enum
 from typing import Any
 import uuid
@@ -105,6 +105,7 @@ class CareTask:
 	priority: int
 	frequency: Frequency
 	weekdays: set[Weekday] = field(default_factory=set)
+	due_date: date = field(default_factory=date.today)
 	required: bool = False
 	preferred_time: TimeWindow | None = None
 	notes: str = ""
@@ -152,9 +153,31 @@ class TaskInstance:
 	reason: str
 	status: TaskStatus = TaskStatus.PLANNED
 
-	def mark_done(self) -> None:
-		"""Mark this task instance as completed."""
+	def mark_done(self) -> TaskInstance | None:
+		"""Mark this task instance as completed and return next recurring instance when applicable."""
 		self.status = TaskStatus.DONE
+		if self.task.frequency == Frequency.DAILY:
+			next_due = date.today() + timedelta(days=1)
+			return self._build_next_instance(next_due, timedelta(days=1))
+
+		if self.task.frequency == Frequency.WEEKLY:
+			next_due = date.today() + timedelta(weeks=1)
+			return self._build_next_instance(next_due, timedelta(weeks=1))
+
+		return None
+
+	def _build_next_instance(self, due_date: date, schedule_delta: timedelta) -> TaskInstance:
+		"""Create the next recurring task instance with an updated due date."""
+		next_task = deepcopy(self.task)
+		next_task.task_id = str(uuid.uuid4())
+		next_task.due_date = due_date
+
+		return TaskInstance(
+			task=next_task,
+			scheduled_start=self.scheduled_start + schedule_delta,
+			scheduled_end=self.scheduled_end + schedule_delta,
+			reason="Auto-created from recurring task completion.",
+		)
 
 	def mark_skipped(self) -> None:
 		"""Mark this task instance as skipped."""
@@ -167,7 +190,34 @@ class SchedulePlan:
 	items: list[TaskInstance] = field(default_factory=list)
 	total_minutes: int = 0
 	unscheduled_tasks: list[CareTask] = field(default_factory=list)
+	warnings: list[str] = field(default_factory=list)
 	explanation: PlannerExplanation | None = None
+
+	def filter_items(
+		self,
+		status: TaskStatus | None = None,
+		pet_name: str | None = None,
+		pets: list[Pet] | None = None,
+	) -> list[TaskInstance]:
+		"""Filter scheduled items by completion status and/or pet name."""
+		filtered = list(self.items)
+
+		if status is not None:
+			filtered = [item for item in filtered if item.status == status]
+
+		if pet_name is not None:
+			matching_pet_ids: set[str]
+			if pets is not None:
+				normalized_pet_name = pet_name.strip().lower()
+				matching_pet_ids = {
+					pet.pet_id for pet in pets if pet.name.strip().lower() == normalized_pet_name
+				}
+			else:
+				matching_pet_ids = {pet_name}
+
+			filtered = [item for item in filtered if item.task.pet_id in matching_pet_ids]
+
+		return filtered
 
 	def add_item(self, item: TaskInstance) -> None:
 		"""Add a task instance to the schedule and update total_minutes."""
@@ -199,6 +249,11 @@ class SchedulePlan:
 			lines.append(f"\nCould not fit {len(self.unscheduled_tasks)} tasks:")
 			for task in self.unscheduled_tasks:
 				lines.append(f"  - {task.title} ({task.duration_min} min)")
+
+		if self.warnings:
+			lines.append("\nWarnings:")
+			for warning in self.warnings:
+				lines.append(f"  - {warning}")
 		
 		return "\n".join(lines)
 
@@ -227,39 +282,131 @@ class PlannerExplanation:
 
 class TaskRepository:
 	def __init__(self) -> None:
-		"""Initialize an empty in-memory task repository."""
-		self.tasks: list[CareTask] = []
+		"""Initialize in-memory task storage keyed by task_id."""
+		self._tasks_by_id: dict[str, CareTask] = {}
 
 	def add_task(self, task: CareTask) -> None:
-		"""Add a task to the repository if its task_id is not already present."""
-		if any(t.task_id == task.task_id for t in self.tasks):
+		"""Insert a task by unique task_id, raising ValueError on duplicates."""
+		if task.task_id in self._tasks_by_id:
 			raise ValueError(f"Task with id {task.task_id} already exists")
-		self.tasks.append(task)
+		self._tasks_by_id[task.task_id] = task
 
 	def update_task(self, task_id: str, updates: dict[str, Any]) -> None:
-		"""Find and update a task by task_id with the given updates."""
-		for task in self.tasks:
-			if task.task_id == task_id:
-				for key, value in updates.items():
-					if hasattr(task, key):
-						setattr(task, key, value)
-				return
-		raise ValueError(f"Task with id {task_id} not found")
+		"""Apply partial updates by task_id and keep keys in sync if task_id changes."""
+		task = self._tasks_by_id.get(task_id)
+		if task is None:
+			raise ValueError(f"Task with id {task_id} not found")
+
+		for key, value in updates.items():
+			if hasattr(task, key):
+				setattr(task, key, value)
+
+		# If task_id itself was updated, keep the dictionary key in sync.
+		if task.task_id != task_id:
+			if task.task_id in self._tasks_by_id:
+				raise ValueError(f"Task with id {task.task_id} already exists")
+			self._tasks_by_id.pop(task_id)
+			self._tasks_by_id[task.task_id] = task
+			return
 
 	def delete_task(self, task_id: str) -> None:
-		"""Remove a task by task_id."""
-		self.tasks = [t for t in self.tasks if t.task_id != task_id]
+		"""Delete a task by id if it exists, ignoring missing ids."""
+		self._tasks_by_id.pop(task_id, None)
 
 	def list_tasks(self) -> list[CareTask]:
-		"""Return all tasks in the repository."""
-		return list(self.tasks)
+		"""Return a shallow list snapshot of all stored tasks."""
+		return list(self._tasks_by_id.values())
 
 	def list_tasks_for_pet(self, pet_id: str) -> list[CareTask]:
-		"""Return all tasks for a specific pet."""
-		return [t for t in self.tasks if t.pet_id == pet_id]
+		"""Return all tasks currently assigned to one pet id."""
+		return [t for t in self._tasks_by_id.values() if t.pet_id == pet_id]
+
+	def filter_tasks(
+		self,
+		pet_id: str | None = None,
+		category: TaskCategory | None = None,
+		due_date: date | None = None,
+	) -> list[CareTask]:
+		"""Filter tasks by optional pet, category, and due-date criteria."""
+		filtered = list(self._tasks_by_id.values())
+
+		# Apply low-cost filters first, then date-based recurrence checks.
+		if pet_id is not None:
+			filtered = [t for t in filtered if t.pet_id == pet_id]
+
+		if category is not None:
+			filtered = [t for t in filtered if t.category == category]
+
+		if due_date is not None:
+			filtered = [t for t in filtered if t.is_due(due_date)]
+
+		return list(filtered)
 
 
 class Scheduler:
+	def detect_time_conflicts(self, items: list[TaskInstance]) -> list[tuple[TaskInstance, TaskInstance]]:
+		"""Return pairs of scheduled task instances that overlap in time.
+
+		A conflict is reported whenever two task windows intersect,
+		including exact same start times.
+		"""
+		conflicts: list[tuple[TaskInstance, TaskInstance]] = []
+		sorted_items = sorted(items, key=lambda item: (item.scheduled_start, item.scheduled_end))
+
+		for i, left in enumerate(sorted_items):
+			for right in sorted_items[i + 1 :]:
+				# Since items are start-time sorted, no later items can overlap once this is true.
+				if right.scheduled_start >= left.scheduled_end:
+					break
+
+				if self._items_overlap(left, right):
+					conflicts.append((left, right))
+
+		return conflicts
+
+	def _items_overlap(self, left: TaskInstance, right: TaskInstance) -> bool:
+		"""Return whether two scheduled task instances overlap in time."""
+		return left.scheduled_start < right.scheduled_end and right.scheduled_start < left.scheduled_end
+
+	def detect_time_conflict_warnings(self, items: list[TaskInstance]) -> list[str]:
+		"""Lightweight strategy that reports conflicts as warnings and never raises."""
+		warnings: list[str] = []
+		valid_items: list[TaskInstance] = []
+
+		try:
+			for item in items:
+				if not self._has_valid_window(item):
+					task_title = getattr(getattr(item, "task", None), "title", "Unknown task")
+					warnings.append(
+						f"Warning: Skipped conflict check for '{task_title}' because it has an invalid time window."
+					)
+					continue
+				valid_items.append(item)
+
+			for left, right in self.detect_time_conflicts(valid_items):
+				left_title = getattr(left.task, "title", "Unknown task")
+				right_title = getattr(right.task, "title", "Unknown task")
+				left_pet = getattr(left.task, "pet_id", "unknown-pet")
+				right_pet = getattr(right.task, "pet_id", "unknown-pet")
+				warnings.append(
+					f"Warning: '{left_title}' ({left_pet}) conflicts with '{right_title}' ({right_pet}) at "
+					f"{left.scheduled_start.strftime('%H:%M')}."
+				)
+		except Exception as error:
+			warnings.append(
+				f"Warning: Conflict detection hit an internal issue ({error}) and continued without blocking scheduling."
+			)
+
+		return warnings
+
+	def _has_valid_window(self, item: TaskInstance) -> bool:
+		"""Return whether a task instance has comparable datetime bounds."""
+		start = getattr(item, "scheduled_start", None)
+		end = getattr(item, "scheduled_end", None)
+		if not isinstance(start, datetime) or not isinstance(end, datetime):
+			return False
+		return start < end
+
 	def generate_plan(self, tasks: list[CareTask], constraints: DailyConstraints) -> SchedulePlan:
 		"""Generate a daily schedule plan from tasks and daily constraints."""
 		plan = SchedulePlan(plan_date=constraints.target_date)
@@ -268,11 +415,8 @@ class Scheduler:
 		if not constraints.validate():
 			return plan
 		
-		# Filter tasks: only those due today and for the active pet
-		due_tasks = [
-			t for t in tasks
-			if t.is_due(constraints.target_date) and t.pet_id == constraints.active_pet_id
-		]
+		# Filter tasks: only those due today and for the active pet.
+		due_tasks = self.filter_tasks(tasks, constraints)
 		
 		# Rank and fit tasks
 		ranked = self.rank_tasks(due_tasks, constraints)
@@ -283,7 +427,7 @@ class Scheduler:
 		
 		for task in fitted:
 			start = current_time
-			end = start + __import__('datetime').timedelta(minutes=task.duration_min)
+			end = start + timedelta(minutes=task.duration_min)
 			instance = TaskInstance(
 				task=task,
 				scheduled_start=start,
@@ -300,14 +444,69 @@ class Scheduler:
 		# Build explanation
 		explanation = self.build_explanation(plan, due_tasks, constraints)
 		plan.explanation = explanation
+		plan.warnings.extend(self.detect_time_conflict_warnings(plan.items))
 		
 		return plan
 
+	def filter_tasks(self, tasks: list[CareTask], constraints: DailyConstraints) -> list[CareTask]:
+		"""Filter tasks for the active pet and due date using a deterministic pipeline."""
+		filtered = tasks
+
+		if constraints.active_pet_id is not None:
+			filtered = [t for t in filtered if t.pet_id == constraints.active_pet_id]
+
+		filtered = [t for t in filtered if t.is_due(constraints.target_date)]
+		return filtered
+
 	def rank_tasks(self, tasks: list[CareTask], constraints: DailyConstraints) -> list[CareTask]:
-		"""Rank tasks by descending computed score."""
-		scored_tasks = [(t, t.score(constraints)) for t in tasks]
-		scored_tasks.sort(key=lambda x: x[1], reverse=True)
-		return [t for t, _ in scored_tasks]
+		"""Rank tasks with a stable, deterministic ordering.
+
+		Sort priority:
+		1) Earlier time first (task.time when present, otherwise preferred window start)
+		2) Narrower preferred windows first
+		3) Required tasks before optional tasks
+		4) Higher priority score first
+		5) Shorter duration first
+		6) Title and task_id for deterministic tie-breaking
+		"""
+		return sorted(tasks, key=lambda task: (self._time_sort_key(task), self._task_sort_key(task)))
+
+	def sort_by_time(self, tasks: list[CareTask]) -> list[CareTask]:
+		"""Sort tasks by time, preferring task.time, then preferred_time, then no-time tasks."""
+		return sorted(tasks, key=lambda task: (self._time_sort_key(task), task.title.lower(), task.task_id))
+
+	def _time_sort_key(self, task: CareTask) -> tuple[int, int]:
+		"""Return a sortable time key for tasks with explicit time or preferred windows."""
+		if hasattr(task, "time"):
+			time_value = getattr(task, "time")
+			if isinstance(time_value, datetime):
+				return (0, time_value.hour * 60 + time_value.minute)
+			if isinstance(time_value, int):
+				return (0, time_value * 60)
+
+		if task.preferred_time is not None:
+			return (1, task.preferred_time.start_hour * 60)
+
+		return (2, 24 * 60)
+
+	def _task_sort_key(self, task: CareTask) -> tuple[Any, ...]:
+		"""Return a deterministic sort key for a care task."""
+		window_span = (
+			task.preferred_time.end_hour - task.preferred_time.start_hour
+			if task.preferred_time
+			else 24
+		)
+		required_rank = 0 if task.required else 1
+		priority_rank = -task.priority
+
+		return (
+			window_span,
+			required_rank,
+			priority_rank,
+			task.duration_min,
+			task.title.lower(),
+			task.task_id,
+		)
 
 	def fit_within_budget(self, tasks: list[CareTask], minutes: int) -> list[CareTask]:
 		"""Greedily select tasks that fit within the available minute budget."""

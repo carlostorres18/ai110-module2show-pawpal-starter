@@ -22,6 +22,15 @@ Your final app should:
 - Display the plan clearly (and ideally explain the reasoning)
 - Include tests for the most important scheduling behaviors
 
+## Smarter Scheduling
+
+Recent improvements make scheduling more reliable and easier to maintain:
+
+- Faster task repository lookups by storing tasks by `task_id` internally
+- More consistent update behavior when task IDs change
+- Cleaner repository method documentation for easier onboarding and debugging
+- Existing scheduling behavior preserved and verified by passing tests
+
 ## Getting started
 
 ### Setup
