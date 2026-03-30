@@ -40,11 +40,13 @@
 
 - How did you use AI tools during this project (for example: design brainstorming, debugging, refactoring)?
 - What kinds of prompts or questions were most helpful?
+    - For this project I would use Copilot to design ideas on some of the implementations as well as the algorithmic side of things for the project, specially the part when it came down to making some aspects of the project run faster or not take long as before.
 
 **b. Judgment and verification**
 
 - Describe one moment where you did not accept an AI suggestion as-is.
 - How did you evaluate or verify what the AI suggested?
+    - One of the suggestions that took more serious prompting than just the first outputs was when it came down to building the logic and algorithm for the Scheduler. The way that I was able to verify what the AI suggested was that I would tell copilot to implement the changes, test them and see if they are following the guidelines of the project, but also if they made sense overall. If they didn't I would tell Copilot to reverse the changes and then brainstorm another way to make the scheduler, or making changes to the scheduler.
 
 ---
 
@@ -54,11 +56,13 @@
 
 - What behaviors did you test?
 - Why were these tests important?
+    - One of the behaviors that I tested was one where I tested recurrence behavior for daily and weekly tasks, verifying that completing a recurring task creates the next scheduled instance with the correct next date and time. These tests reduce the risk of scheduling bugs that could cause missed care tasks, duplicate work, or impossible schedules. Overall making the testing of this application great.
 
 **b. Confidence**
 
 - How confident are you that your scheduler works correctly?
 - What edge cases would you test next if you had more time?
+    - I am confident that my scheduler works correctly for the main use cases because I tested core behaviors like recurring task creation, task ordering, filtering, and time-conflict detection. I would describe this scheduler good, but not perfect as there is always room for improvement, especially high-complexity schedules.
 
 ---
 
@@ -67,11 +71,14 @@
 **a. What went well**
 
 - What part of this project are you most satisfied with?
+    - I'm satisfied of the overall structure of the project, this is my first time going as deep as creating the overall design of a new project and how to use AI in a good way for the overall structure of the project.
 
 **b. What you would improve**
 
 - If you had another iteration, what would you improve or redesign?
+    - If I had another iteration, I would test edge cases where very tight schedules where available minutes are smaller than every task. Or even try to improve the overall structure of how the program behaves.
 
 **c. Key takeaway**
 
 - What is one important thing you learned about designing systems or working with AI on this project?
+    - It's really Hard!!! But in all seriousness while working with AI may sound enticing on how fast it can create tests or work on the algorithmic side of a project, sometimes AI can lead to decisions that you may think at first is what you wanted to do originally, but would later find that it's not close to what you originally had in mind. So with this in mind we should be aware of code that AI might try to give us so that we can advance on the design of a project as Software Engineers.
